@@ -37,45 +37,6 @@ Device to transfer messages on a canbus over USB serial as slcan format messages
 |   PA2   |  NC     | Set        |          |
 |   PA3   |  NC     | Reset      |          |
 
-## Removing Nucleo st-link pcb section
-The portion of the dev board containing the st-link functionality can
-be removed from the Nucleo. The remaining board must then be powered
-through CN7 using Vin.
-
-The board can still be programmed by connecting to CN7-7 [SWDIO] and
-CN7-15 [SWCLK] from wires on CN4 on the st-link pcb.
-
-### Jumper setting to use st-link externally, ie by using the jumper wires
-
-- CN2 jumpers both OFF
-
-### SWD connector CN4 on st-link pcb
-
-| Logic Signal | Pin No |
-|-------------:|-------:|
-| VDD Target   |      1 |
-| SWCLK        |      2 |
-| GND          |      3 |
-| SWDIO        |      4 |
-| NRST         |      5 |
-| SWO          |      6 |
-
-## Jumper Configuration for Vin power supply for Nucleo
-
-- JP5 pins 2 & 3 connected (Towards E5V label)
-- JP1 OFF
-
-The following power sequence procedure must be respected:
-1. Connect the jumper between pin 2 and pin 3 of JP5.
-2. Check that JP1 is removed.
-3. Connect the external power source to VIN or E5V.
-4. Power on the external power supply 7 V< VIN < 12 V to VIN, or 5 V for E5V.
-5. Check that LD3 is turned ON.
-6. Connect the PC to USB connector CN1.
-
-If this order is not respected, the board may be supplied by VBUS first then by VIN or E5V,
-and the following risks may be encountered:
-
 ## Dependencies
 
 #### 1. `flip-link`:
