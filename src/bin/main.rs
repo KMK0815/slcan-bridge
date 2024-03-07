@@ -4,10 +4,9 @@
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::{select, select::Either};
-use embassy_stm32::can::bxcan::filter::Mask32;
-use embassy_stm32::can::bxcan::Fifo;
 use embassy_stm32::can::{
-    Can, Rx0InterruptHandler, Rx1InterruptHandler, SceInterruptHandler, TxInterruptHandler,
+    bxcan::filter::Mask32, bxcan::Fifo, Can, Rx0InterruptHandler, Rx1InterruptHandler,
+    SceInterruptHandler, TxInterruptHandler,
 };
 use embassy_stm32::peripherals::{CAN, USART2};
 use embassy_stm32::usart::{BufferedUart, BufferedUartRx, BufferedUartTx, Config};
@@ -59,8 +58,8 @@ async fn main(spawner: Spawner) {
     let uart =
         BufferedUart::new(p.USART2, Irqs, p.PA3, p.PA2, tx_buf, rx_buf, uart_config).unwrap();
     let (mut tx, rx) = uart.split();
-    let msg = "Hello, slcan-bridge\r\n";
-    tx.write_all(msg.as_bytes()).await.unwrap();
+
+    uart_tx(&mut tx, "Hello, slcan-bridge\r\n".as_bytes()).await;
 
     // set alternate pin mapping to B8/B9
     embassy_stm32::pac::AFIO
@@ -74,13 +73,21 @@ async fn main(spawner: Spawner) {
 
     info!("Starting tasks...");
 
-    unwrap!(spawner.spawn(uart_read(rx, bcan_channel.sender())));
+    unwrap!(spawner.spawn(uart_read_task(rx, bcan_channel.sender())));
     unwrap!(spawner.spawn(bcan_task(tx, bcan, bcan_channel.receiver())));
 }
 
-/// task to read uart
+/// function to write to uart tx
+async fn uart_tx(tx: &mut BufferedUartTx<'static, USART2>, buf: &[u8]) {
+    match tx.write_all(buf).await {
+        Ok(()) => {}
+        Err(e) => error!("error during tx: {:?}", e),
+    }
+}
+
+/// task to read uart and extract slcan packets
 #[embassy_executor::task]
-async fn uart_read(
+async fn uart_read_task(
     mut rx: BufferedUartRx<'static, USART2>,
     bcan_sender: Sender<'static, NoopRawMutex, SlcanIncoming, 10>,
 ) {
@@ -92,17 +99,19 @@ async fn uart_read(
     loop {
         match rx.read_exact(&mut buf).await {
             Ok(()) => {
-                info!("RX {=[?]}", buf);
+                trace!("RX 0x{:x}", buf[0]);
                 match slcan_parser.feed(buf[0]) {
+                    // nothing to do
                     Ok(SlcanIncoming::Wait) => {}
-                    Ok(msg) => {
-                        info!("received incoming {:?}", msg);
-                        bcan_sender.send(msg).await;
+                    // packet completed
+                    Ok(pkt) => {
+                        debug!("received incoming {:?}", pkt);
+                        bcan_sender.send(pkt).await;
                     }
-                    Err(_) => error!("error parsing incoming bytes"),
+                    Err(e) => error!("error parsing: {:?}", e),
                 }
             }
-            Err(e) => error!("{:?}", e),
+            Err(e) => error!("uart rx error: {:?}", e),
         }
     }
 }
@@ -130,30 +139,37 @@ async fn bcan_task(
     bcan.set_bitrate(250_000);
 
     loop {
-        // check the channel for messages to send,
-        // can device can signal interrupt
+        // check the channel for slcan packets
+        // check CAN device for received frames
         match select::select(receiver.receive(), bcan.read()).await {
             Either::First(recv) => {
-                debug!("received slcan message from host to send on canbus");
+                debug!("received slcan packet from host");
                 match recv {
                     SlcanIncoming::Frame(frame) => {
                         if !can_enabled {
-                            warn!("can disabled, frame discarded");
+                            warn!("CAN closed, frame discarded");
                         } else {
-                            let frame = slcan_bridge::canserial_to_bxcan(&frame).unwrap();
-                            bcan.write(&frame).await;
-                            debug!("can frame sent");
+                            // safety - parser won't allow invalid frames, so this is ok
+                            let frame = slcan_bridge::canserial_to_bxcan(&frame)
+                                .expect("slcan parser supplied bad frame");
+                            let status = bcan.write(&frame).await;
+                            debug!("CAN frame {:?} sent", frame);
+                            if status.dequeued_frame().is_some() {
+                                let lo_priority_frame = status.dequeued_frame().unwrap();
+                                bcan.write(&lo_priority_frame).await;
+                                debug!("low priority frame reinserted into hardware");
+                            }
                         }
                     }
                     SlcanIncoming::Open => {
                         bcan.enable().await;
                         can_enabled = true;
-                        debug!("can enabled");
+                        debug!("CAN open");
                     }
                     SlcanIncoming::Close => {
                         can_enabled = false;
                         bcan.as_mut().modify_config().leave_disabled();
-                        debug!("can disabled");
+                        debug!("CAN closed");
                     }
                     SlcanIncoming::Listen => {
                         bcan.as_mut()
@@ -164,7 +180,7 @@ async fn bcan_task(
                         bcan.set_bitrate(250_000);
                         bcan.enable().await;
                         can_enabled = true;
-                        debug!("can set to listen/loopback");
+                        debug!("CAN set to listen/loopback");
                     }
                     SlcanIncoming::Speed(spd) => {
                         bcan.as_mut().modify_config().leave_disabled();
@@ -182,7 +198,7 @@ async fn bcan_task(
                         bcan.set_bitrate(bus_spd);
                         bcan.enable().await;
                         can_enabled = true;
-                        debug!("can bus speed set to {}", bus_spd);
+                        debug!("CAN bus speed set to {}", bus_spd);
                     }
                     SlcanIncoming::ReadStatus => {
                         warn!("unimplemented");
@@ -197,9 +213,12 @@ async fn bcan_task(
             }
             Either::Second(e) => match e {
                 Ok(env) => {
-                    let tx_pkt = slcan_bridge::bxcan_to_vec(&env.frame).unwrap();
-                    info!("got message on bcan {:?}", tx_pkt);
-                    unwrap!(tx.write_all(tx_pkt.as_slice()).await);
+                    // this can fail via invalid frame, or not enough space
+                    // in vector, neither of which should happen
+                    info!("CAN frame received {:?}", env.frame);
+                    let tx_pkt =
+                        slcan_bridge::bxcan_to_vec(&env.frame).expect("bxcan received bad frame");
+                    uart_tx(&mut tx, tx_pkt.as_slice()).await;
                 }
                 Err(_) => error!("what happened"),
             },
