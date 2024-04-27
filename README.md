@@ -2,40 +2,62 @@
 
 Device to transfer messages on a canbus over USB serial as slcan format messages.
 
+## Software
+
+Once the device is plugged in, it should be at /dev/ttyACM0 or
+similar. To check, use dmesg or similar.  To setup serial over
+socketcan or slcan:
+
+```
+stty -F /dev/ttyACM0 ospeed 115200
+sudo slcan_attach -o -s5 /dev/ttyACM0
+sudo ip link set slcan0 up
+ip link show slcan0
+```
+
 ## Hardware
 
-- [Nucleo-F103RB](https://www.st.com/en/evaluation-tools/nucleo-f303re.html)
+- [Nucleo-F103RB](https://www.st.com/en/evaluation-tools/nucleo-f103rb.html)
 
 ### Dev Board Hardware Pin assignments
 
-#### CN10 Connector
+The MCU Pin column is adjacent to headers it is connected to, ie
+PB8 is on CN5-10 and CN10-3. Odd columns start at pin number '1' and even
+columns start at pin number '2'.
 
-| MCU Pin | MCU Pin | CN10 Even  | CN10 Odd |
-|--------:|--------:|-----------:|---------:|
-|   PC9   |  PC8    |            |          |
-|   PB8   |  PC6    | I2C1_SCL   |          |
-|   PB9   |  PC5    | I2C1_SDA   |          |
-|  AVDD   |  U5V    |            |          |
-|   GND   |  NC     |            |          |
-|   PA5   |  PA12   | SPI1_SCK   |          |
-|   PA6   |  PA11   | SPI1_MISO  |          |
-|   PA7   |  PB12   | SPI1_MOSI  |          |
-|   PB6   |  PB11   | EPD_CS     |          |
-|   PC7   |  GND    | D/C        |          |
-|   PA9   |  PB2    | USART1_TX  |          |
+#### CN6 Arduino and CN7 Extension
 
-#### CN9 Connector
+| MCU Pin |  CN7 Odd   | CN7 Even  | MCU Pin | CN6 |
+|--------:|-----------:|----------:|--------:|----:|
+|  PC10   |            |           | PC11    |     |
+|  PC12   |            |           |  PD2    |     |
+|   VDD   |            |           |  E5V    |     |
+| BOOT0   |            |           |  GND    |     |
+|    NC   |            |           |   NC    |  1  |
+|    NC   |            |           | IOREF   |  2  |
+|  PA13   |            |           | RESET   |  3  |
+|  PA14   |            |           | +3V3    |  4  |
+|  PA15   |            |           |  +5V    |  5  |
+|   GND   |            |           |  GND    |  6  |
+|   PB7   |            |           |  GND    |  7  |
+|  PC13   |            |           |  VIN    |  8  |
 
-| MCU Pin | MCU Pin | CN9 Even   | CN9 Odd  |
-|--------:|--------:|-----------:|---------:|
-|   PA8   |  PB1    |            |          |
-|  PB10   | PB15    |            |          |
-|   PB4   | PB14    | RST        |          |
-|   PB5   | PB13    | BUSY       |          |
-|   PB3   | AGND    | ENA        |          |
-|  PA10   |  PC4    | USART1_RX  |          |
-|   PA2   |  NC     | Set        |          |
-|   PA3   |  NC     | Reset      |          |
+#### CN5 Arduino and CN10 Extension
+
+| CN5 | MCU Pin | CN10 Odd  | MCU Pin | CN10 Even |
+|----:|--------:|----------:|--------:|----------:|
+|     |   PC9   |           |  PC8    |           |
+| 10  |   PB8   | CANRX     |  PC6    |           |
+|  9  |   PB9   | CANTX     |  PC5    |           |
+|  8  |  AVDD   |           |  U5V    |           |
+|  7  |   GND   |           |  NC     |           |
+|  6  |   PA5   |           |  PA12   |           |
+|  5  |   PA6   |           |  PA11   |           |
+|  4  |   PA7   |           |  PB12   |           |
+|  3  |   PB6   |           |  PB11   |           |
+|  2  |   PC7   | LED2      |  GND    |           |
+|  1  |   PA9   | LED1      |  PB2    |           |
+
 
 ## Dependencies
 

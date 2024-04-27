@@ -5,13 +5,13 @@ use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::{select, select::Either3};
 use embassy_stm32::can::{
-    bxcan::filter::Mask32, bxcan::Fifo, Can, Rx0InterruptHandler, Rx1InterruptHandler,
-    SceInterruptHandler, TxInterruptHandler,
+    bxcan::filter::Mask32, bxcan::Fifo, enums::BusError, Can, Rx0InterruptHandler,
+    Rx1InterruptHandler, SceInterruptHandler, TxInterruptHandler,
 };
 use embassy_stm32::gpio::{Level, Output, Pin, Speed};
 use embassy_stm32::peripherals::{CAN, USART2};
-use embassy_stm32::usart::{BufferedUart, BufferedUartRx, BufferedUartTx, Config};
-use embassy_stm32::{bind_interrupts, peripherals, usart};
+use embassy_stm32::usart::{BufferedUart, BufferedUartRx, BufferedUartTx};
+use embassy_stm32::{bind_interrupts, peripherals, rcc, time::Hertz, usart, Config};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_time::{Instant, Timer};
@@ -46,14 +46,33 @@ async fn main(spawner: Spawner) {
     //defmt::warn!("warn");
     //defmt::error!("error");
 
-    let p = embassy_stm32::init(Default::default());
+    // setup rcc config to use external 8MHz clock
+    // signal that is provided on the Nucleo board
+    // Final sysclk will be 72MHz
+    let mut config: Config = Default::default();
+    config.rcc.hsi = true;
+    config.rcc.hse = Some(rcc::Hse {
+        freq: Hertz(8_000_000),
+        mode: rcc::HseMode::Bypass,
+    });
+    config.rcc.sys = rcc::Sysclk::PLL1_P;
+    config.rcc.pll = Some(rcc::Pll {
+        src: rcc::PllSource::HSE,
+        prediv: rcc::PllPreDiv::DIV1,
+        mul: rcc::PllMul::MUL9,
+    });
+    config.rcc.apb1_pre = rcc::APBPrescaler::DIV2;
+    config.rcc.apb2_pre = rcc::APBPrescaler::DIV2;
+
+    let p = embassy_stm32::init(config);
 
     // led's
     let mut led1 = Output::new(p.PA9.degrade(), Level::Low, Speed::Low);
     let mut led2 = Output::new(p.PC7.degrade(), Level::Low, Speed::Low);
 
-    led2.set_low();
-    led1.set_low();
+    // flash the LED's during init
+    led1.set_high();
+    led2.set_high();
 
     // data channels
     let bcan_channel = BCAN_CHANNEL.init(Channel::new());
@@ -61,13 +80,11 @@ async fn main(spawner: Spawner) {
     // usart
     let tx_buf: &'static mut [u8; 32] = TX_BUF.init([0u8; 32]);
     let rx_buf: &'static mut [u8; 4] = RX_BUF.init([0u8; 4]);
-    let mut uart_config = Config::default();
-    uart_config.baudrate = 230_400;
+    let mut uart_config = usart::Config::default();
+    uart_config.baudrate = 115_200;
     let uart =
         BufferedUart::new(p.USART2, Irqs, p.PA3, p.PA2, tx_buf, rx_buf, uart_config).unwrap();
-    let (mut tx, rx) = uart.split();
-
-    uart_tx(&mut tx, "Hello, slcan-bridge\r\n".as_bytes()).await;
+    let (tx, rx) = uart.split();
 
     // set alternate pin mapping to B8/B9
     embassy_stm32::pac::AFIO
@@ -78,6 +95,9 @@ async fn main(spawner: Spawner) {
     let bcan = Can::new(p.CAN, p.PB8, p.PB9, Irqs);
 
     Timer::after_millis(800).await;
+
+    led1.set_low();
+    led2.set_low();
 
     info!("Starting tasks...");
 
@@ -107,7 +127,7 @@ async fn uart_read_task(
     loop {
         match rx.read_exact(&mut buf).await {
             Ok(()) => {
-                trace!("RX 0x{:x}", buf[0]);
+                debug!("rx:0x{:x}", buf[0]);
                 match slcan_parser.feed(buf[0]) {
                     // nothing to do
                     Ok(SlcanIncoming::Wait) => {}
@@ -135,6 +155,7 @@ async fn bcan_task(
 ) {
     info!("bcan task starting");
     let mut can_enabled = false;
+    let mut can_silent = false;
 
     bcan.as_mut()
         .modify_filters()
@@ -143,7 +164,7 @@ async fn bcan_task(
     bcan.as_mut()
         .modify_config()
         .set_loopback(false)
-        .set_silent(false)
+        .set_silent(can_silent)
         .leave_disabled();
 
     bcan.set_bitrate(250_000);
@@ -152,16 +173,19 @@ async fn bcan_task(
     loop {
         // check the channel for slcan packets
         // check CAN device for received frames
-        match select::select3(receiver.receive(), bcan.read(), Timer::after_millis(50)).await {
+        // timeout to turn off rx/tx led's after a wait
+        match select::select3(receiver.receive(), bcan.read(), Timer::after_millis(5)).await {
             Either3::First(recv) => {
                 debug!("received slcan packet from host");
                 match recv {
                     SlcanIncoming::Frame(frame) => {
                         // serial port has passed a frame to transmit on the hardware
                         tx_timer_last.replace(Instant::now());
-                        led1.set_low();
+                        led1.set_high();
                         if !can_enabled {
                             warn!("CAN closed, frame discarded");
+                        } else if can_silent {
+                            warn!("CAN silent, frame discarded");
                         } else {
                             // safety - parser won't allow invalid frames, so this is ok
                             let frame = slcan_bridge::canserial_to_bxcan(&frame)
@@ -191,13 +215,12 @@ async fn bcan_task(
                         // CAN Listen only, no tx
                         bcan.as_mut()
                             .modify_config()
-                            .set_loopback(false)
                             .set_silent(true)
                             .leave_disabled();
-                        bcan.set_bitrate(250_000);
                         bcan.enable().await;
+                        can_silent = true;
                         can_enabled = true;
-                        debug!("CAN set to listen/loopback");
+                        debug!("CAN listen");
                     }
                     SlcanIncoming::Speed(spd) => {
                         // set CAN bus speed
@@ -240,23 +263,29 @@ async fn bcan_task(
                     // in vector, neither of which should happen
                     info!("CAN frame received {:?}", env.frame);
                     rx_timer_last.replace(Instant::now());
-                    led2.set_low();
+                    led2.set_high();
                     let tx_pkt =
                         slcan_bridge::bxcan_to_vec(&env.frame).expect("bxcan received bad frame");
                     uart_tx(&mut tx, tx_pkt.as_slice()).await;
                 }
-                Err(_) => error!("what happened"),
+                Err(e) => match e {
+                    BusError::BusPassive | BusError::BusOff => {
+                        bcan.as_mut().modify_config().leave_disabled();
+                        error!("{:?}, turned off can", e);
+                    }
+                    _ => error!("CAN Bus error, what happened: {:?}", e),
+                },
             },
             Either3::Third(_) => {
                 let t = Instant::now();
                 if tx_timer_last.is_some() {
-                    if (t - tx_timer_last.unwrap()).as_millis() > 50 {
+                    if (t - tx_timer_last.unwrap()).as_millis() > 10 {
                         led1.set_low();
                         tx_timer_last = None;
                     }
                 }
                 if rx_timer_last.is_some() {
-                    if (t - rx_timer_last.unwrap()).as_millis() > 50 {
+                    if (t - rx_timer_last.unwrap()).as_millis() > 10 {
                         led2.set_low();
                         rx_timer_last = None;
                     }
