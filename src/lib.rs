@@ -47,7 +47,7 @@ pub fn bxcan_to_vec(bxcan_frame: &bxcan::Frame) -> Option<Vec<u8, 32>> {
     let frame = bxcan_to_canserial(bxcan_frame)?;
     // longest canserial ascii string for an extended id frame is 26 bytes
     let mut buffer: Vec<u8, 32> = Vec::new();
-    core::write!(&mut buffer, "{}\r\n", frame).ok();
+    core::write!(&mut buffer, "{}\r", frame).ok();
     Some(buffer)
 }
 
