@@ -4,6 +4,7 @@
 use bxcan;
 use core::fmt::Write;
 use cortex_m_semihosting::debug;
+//use defmt::*;
 use embedded_hal::can::{ExtendedId, Frame, Id, StandardId};
 use heapless::Vec;
 use slcan_parser::CanserialFrame;
@@ -104,12 +105,35 @@ pub fn bxcan_to_canserial(bcanframe: &bxcan::Frame) -> Option<CanserialFrame> {
             bxcan_to_canserial_id(&bcanframe.id())?,
             bcanframe.dlc() as usize,
         ),
-        false => {
-            let data = bcanframe.data().unwrap();
-            CanserialFrame::new_frame(
+        false => match bcanframe.data() {
+            Some(d) => CanserialFrame::new_frame(
                 bxcan_to_canserial_id(&bcanframe.id())?,
-                data.get(0..data.len())?,
-            )
+                d.get(0..d.len())?,
+            ),
+            // possible to have an empty data frame
+            None => CanserialFrame::new_frame(bxcan_to_canserial_id(&bcanframe.id())?, &[]),
+        },
+    }
+}
+
+// defmt-test 0.3.0 has the limitation that this `#[tests]` attribute can only be used
+// once within a crate. the module can be in any file but there can only be at most
+// one `#[tests]` module in this library crate
+#[cfg(test)]
+#[defmt_test::tests]
+mod unit_tests {
+    use super::*;
+
+    #[test]
+    fn test_canserial_to_bxcan() {
+        let id = Id::Standard(StandardId::new(0x1).unwrap());
+        let cframe =
+            CanserialFrame::new_frame(id, &[0x1, 0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8]).unwrap();
+        let bframe = canserial_to_bxcan(&cframe).unwrap();
+        //assert_eq!(cframe.id(), bframe.id());
+        assert_eq!(cframe.dlc(), bframe.dlc() as usize);
+        for (i, b) in bframe.data().unwrap().iter().enumerate() {
+            assert_eq!(cframe.data()[i], *b);
         }
     }
 }

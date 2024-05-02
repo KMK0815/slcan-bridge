@@ -9,10 +9,14 @@ similar. To check, use dmesg or similar.  To setup serial over
 socketcan or slcan:
 
 ```
-sudo slcand -S115200 -o -s5 ttyACM0 can0
+sudo slcand -S230400 -o -s8 ttyACM0 can0
 sudo ip link set can0 up
 ip link show can0
 ```
+
+## Protocol
+
+[can-utils](https://github.com/linux-can/can-utils.git)
 
 ## Hardware
 

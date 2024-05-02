@@ -81,7 +81,7 @@ async fn main(spawner: Spawner) {
     let tx_buf: &'static mut [u8; 32] = TX_BUF.init([0u8; 32]);
     let rx_buf: &'static mut [u8; 4] = RX_BUF.init([0u8; 4]);
     let mut uart_config = usart::Config::default();
-    uart_config.baudrate = 115_200;
+    uart_config.baudrate = 230_400;
     let uart =
         BufferedUart::new(p.USART2, Irqs, p.PA3, p.PA2, tx_buf, rx_buf, uart_config).unwrap();
     let (tx, rx) = uart.split();
