@@ -1,20 +1,24 @@
 #![no_std]
 #![no_main]
 
-use bxcan;
 use core::fmt::Write;
 use cortex_m_semihosting::debug;
-//use defmt::*;
+
 use embedded_hal::can::{ExtendedId, Frame, Id, StandardId};
+
 use heapless::Vec;
+
 use slcan_parser::CanserialFrame;
+
+use device::bdma::vals::{Dir, Pl, Size};
+use device::gpio::vals::{CnfIn, CnfOut, Mode};
+use stm32_metapac::{self as device, interrupt};
 
 use defmt_rtt as _; // global logger
 
-// our hal
-use embassy_stm32 as _;
-
 use panic_probe as _;
+
+pub mod can;
 
 // same panicking *behavior* as `panic-probe` but doesn't print a panic message
 // this prevents the panic message being printed *twice* when `defmt::panic` is invoked
@@ -68,6 +72,24 @@ pub fn bxcan_to_canserial_id(id: &bxcan::Id) -> Option<Id> {
     }
 }
 
+/// Convert `bxcan::Frame` to `CanserialFrame` for use with serial port
+pub fn bxcan_to_canserial(bcanframe: &bxcan::Frame) -> Option<CanserialFrame> {
+    match bcanframe.is_remote_frame() {
+        true => CanserialFrame::new_remote(
+            bxcan_to_canserial_id(&bcanframe.id())?,
+            bcanframe.dlc() as usize,
+        ),
+        false => match bcanframe.data() {
+            Some(d) => CanserialFrame::new_frame(
+                bxcan_to_canserial_id(&bcanframe.id())?,
+                d.get(0..d.len())?,
+            ),
+            // possible to have an empty data frame
+            None => CanserialFrame::new_frame(bxcan_to_canserial_id(&bcanframe.id())?, &[]),
+        },
+    }
+}
+
 /// Convert `Id` to `bxcan::Id`
 ///
 /// bxcan doesn't use embedded_hal
@@ -95,24 +117,6 @@ pub fn canserial_to_bxcan(slcan: &CanserialFrame) -> Option<bxcan::Frame> {
             canserial_to_bxcan_id(&slcan.id())?,
             bxcan::Data::new(slcan.data())?,
         )),
-    }
-}
-
-/// Convert `bxcan::Frame` to `CanserialFrame` for use with serial port
-pub fn bxcan_to_canserial(bcanframe: &bxcan::Frame) -> Option<CanserialFrame> {
-    match bcanframe.is_remote_frame() {
-        true => CanserialFrame::new_remote(
-            bxcan_to_canserial_id(&bcanframe.id())?,
-            bcanframe.dlc() as usize,
-        ),
-        false => match bcanframe.data() {
-            Some(d) => CanserialFrame::new_frame(
-                bxcan_to_canserial_id(&bcanframe.id())?,
-                d.get(0..d.len())?,
-            ),
-            // possible to have an empty data frame
-            None => CanserialFrame::new_frame(bxcan_to_canserial_id(&bcanframe.id())?, &[]),
-        },
     }
 }
 

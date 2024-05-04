@@ -14,23 +14,19 @@ harness = false
 
 [dependencies]
 cortex-m = { version = "0.7.6", features = ["inline-asm", "critical-section-single-core"] }
-cortex-m-rt = "0.7.0"
-defmt = "0.3"
-defmt-rtt = "0.4"
+cortex-m-rt = "0.7.1"
+defmt = "0.3.6"
+defmt-rtt = "0.4.0"
 panic-probe = { version = "0.3", features = ["print-defmt"] }
 cortex-m-semihosting = "0.5.0"
-embassy-stm32 = { version = "0.1.0", path = "../embassy/embassy-stm32", features = ["defmt", "stm32f103rb", "unstable-pac", "memory-x", "time-driver-any"]  }
-embassy-sync = { version = "0.5.0", path = "../embassy/embassy-sync", features = ["defmt"] }
-embassy-executor = { version = "0.5.0", path = "../embassy/embassy-executor", features = ["arch-cortex-m", "executor-thread", "executor-interrupt", "defmt", "integrated-timers"] }
-embassy-time = { version = "0.3.0", path = "../embassy/embassy-time", features = ["defmt", "defmt-timestamp-uptime", "tick-hz-32_768"] }
-embassy-usb = { version = "0.1.0", path = "../embassy/embassy-usb", features = ["defmt"] }
-embassy-futures = { version = "0.1.0", path = "../embassy/embassy-futures" }
+lilos = { version = "1.1.0", features = ["systick"] }
+stm32-metapac = { version = "15.0", features = ["rt", "pac", "memory-x", "stm32f103rb"] }
+futures = { version = "0.3.21", default-features = false, features = ["async-await"] }
 heapless = { version = "0.8", default-features = false }
-static_cell = { version = "1.1", features = ["nightly"] }
+#static_cell = { version = "1.1", features = ["nightly"] }
 embedded-hal = { version = "0.2.7", features = ["unproven"] }
-embedded-io = "0.6.1"
-embedded-io-async = "0.6.0"
-#slcan-parser = { git = "https://github.com/gpgreen/slcan-parser.git", branch = "main", version = "0.1.0" }
+#embedded-io = "0.6.1"
+#embedded-io-async = "0.6.0"
 slcan-parser = { path = "../slcan-parser", features = ["defmt"] }
 bxcan = "0.7.0"
 
@@ -40,11 +36,9 @@ defmt-test = "0.3"
 # cargo build/run
 [profile.dev]
 codegen-units = 1
-debug = 2
-debug-assertions = true # <-
-incremental = false
-opt-level = 'z'         # <-
-overflow-checks = true  # <-
+debug = true
+lto = true
+opt-level = 1
 
 # cargo test
 [profile.test]
@@ -58,12 +52,10 @@ overflow-checks = true  # <-
 # cargo build/run --release
 [profile.release]
 codegen-units = 1
-debug = 2
-debug-assertions = false # <-
-incremental = false
-lto = 'fat'
-opt-level = 3            # <-
-overflow-checks = false  # <-
+debug = true
+lto = true
+opt-level = "s"
+overflow-checks = true
 
 # cargo test --release
 [profile.bench]
