@@ -1,119 +1,28 @@
-use crate::{bxcan_to_canserial, canserial_to_bxcan};
+use crate::{bxcan_to_canserial, can_util, canserial_to_bxcan};
 use slcan_parser::{CanserialFrame, SlCanBusSpeed, SlcanIncoming};
 
 use core::cell::RefCell;
 use core::convert::Infallible;
 
-use device::gpio::vals::{CnfIn, CnfOut, Mode};
 use stm32_metapac::{self as device, interrupt};
 
 use lilos::exec::Notify;
 use lilos::spsc;
 //use lilos::time::{Millis, PeriodicGate};
 
+use futures::future;
+
 use defmt::*;
-
-/// Configuration of pins for CAN controller
-/// A12A11 is can tx = pin A12, can rx = pin A11
-#[derive(Copy, Clone, Format)]
-pub enum BxCanPins {
-    A12A11,
-    B9B8,
-    D1D0,
-}
-
-/// BitTime for CAN bus, select the bus speed in KHz
-#[derive(Copy, Clone, Format)]
-pub enum BxCanBitTiming {
-    B1000,
-    B800,
-    B500,
-    B250,
-    B125,
-    B100,
-    B50,
-    B20,
-    B10,
-}
-
-/// Get the bit time register values from http://www.bittiming.can-wiki.info/
-/// The clock speed is 36MHz, Sample point is 87.5%, SJW=1
-impl From<BxCanBitTiming> for u32 {
-    fn from(bt: BxCanBitTiming) -> u32 {
-        match bt {
-            BxCanBitTiming::B1000 => 0x001e0001,
-            BxCanBitTiming::B800 => 0x001b0002,
-            BxCanBitTiming::B500 => 0x001e0003,
-            BxCanBitTiming::B250 => 0x001c0008,
-            BxCanBitTiming::B100 => 0x001e0013,
-            BxCanBitTiming::B125 => 0x001c0011,
-            BxCanBitTiming::B50 => 0x001c002c,
-            BxCanBitTiming::B20 => 0x001e0063,
-            BxCanBitTiming::B10 => 0x001c00e0,
-        }
-    }
-}
-
-/// Get the bit time register values from http://www.bittiming.can-wiki.info/
-/// The clock speed is 36MHz, Sample point is 87.5%, SJW=1
-impl From<SlCanBusSpeed> for BxCanBitTiming {
-    fn from(bs: SlCanBusSpeed) -> BxCanBitTiming {
-        match bs {
-            SlCanBusSpeed::C10 => BxCanBitTiming::B10,
-            SlCanBusSpeed::C20 => BxCanBitTiming::B20,
-            SlCanBusSpeed::C50 => BxCanBitTiming::B50,
-            SlCanBusSpeed::C100 => BxCanBitTiming::B100,
-            SlCanBusSpeed::C125 => BxCanBitTiming::B125,
-            SlCanBusSpeed::C250 => BxCanBitTiming::B250,
-            SlCanBusSpeed::C500 => BxCanBitTiming::B500,
-            SlCanBusSpeed::C800 => BxCanBitTiming::B800,
-            SlCanBusSpeed::C1000 => BxCanBitTiming::B1000,
-        }
-    }
-}
 
 /// BxCan encapsulates CAN controller, implements bxcan Traits `Instance` and `FilterOwner`
 /// This is more convenient then poking the hardware registers directly. The bxcan crate
 /// is intended to be used by HAL authors
-pub struct BxCan {
-    _can: device::can::Can,
-}
+pub struct BxCan(device::can::Can);
 
 impl BxCan {
-    /// Create an instance of `BxCan` given a pin selection
-    pub fn new(
-        can: device::can::Can,
-        rcc: device::rcc::Rcc,
-        afio: device::afio::Afio,
-        pin_sel: BxCanPins,
-    ) -> Self {
-        // turn on CAN clock
-        rcc.apb1enr().modify(|w| w.set_canen(true));
-        let (port, reg, tx, rx, remap) = match pin_sel {
-            BxCanPins::A12A11 => {
-                // Default alternate configuration, can remap 0b_00
-                rcc.apb2enr().modify(|w| w.set_gpioaen(true));
-                (device::GPIOA, 1, 12 - 8, 11 - 8, 0)
-            }
-            BxCanPins::B9B8 => {
-                // can remap 0b_10
-                rcc.apb2enr().modify(|w| w.set_gpioben(true));
-                (device::GPIOB, 1, 9 - 8, 8 - 8, 2)
-            }
-            BxCanPins::D1D0 => {
-                // can remap 0b_11
-                rcc.apb2enr().modify(|w| w.set_gpioden(true));
-                (device::GPIOD, 0, 1, 0, 3)
-            }
-        };
-        port.cr(reg).modify(|w| {
-            w.set_cnf_out(tx, CnfOut::ALTPUSHPULL);
-            w.set_cnf_in(rx, CnfIn::FLOATING);
-            w.set_mode(tx, Mode::OUTPUT50MHZ);
-            w.set_mode(rx, Mode::INPUT);
-        });
-        afio.mapr().modify(|w| w.set_can1_remap(remap));
-        Self { _can: can }
+    /// Create an instance of `BxCan`
+    pub fn new(can: device::can::Can) -> Self {
+        Self(can)
     }
 }
 
@@ -140,7 +49,13 @@ pub async fn can_service(
     mut pkt: spsc::Popper<'_, SlcanIncoming>,
 ) -> Infallible {
     let can_dev = RefCell::new(can);
-    futures::future::join(can_slcan_pkt(&can_dev, &mut pkt), can_rx(&can_dev, &mut q))
+    can_dev
+        .borrow_mut()
+        .modify_config()
+        .set_silent(false)
+        .set_loopback(false)
+        .leave_disabled();
+    future::join(can_slcan_pkt(&can_dev, &mut pkt), can_rx(&can_dev, &mut q))
         .await
         .0
 }
@@ -154,10 +69,28 @@ async fn can_rx(
     loop {
         debug!("can_rx");
         if let Some(frame) = recv(can).await {
-            let cframe = bxcan_to_canserial(&frame).expect("bxcan received bad frame");
+            debug!("received can frame in can_rx");
+            let cframe = bxcan_to_canserial(&frame).expect("unable to convert invalid frame");
             q.reserve().await.push(cframe);
         }
     }
+}
+
+async fn can_enable(can: &RefCell<bxcan::Can<BxCan>>) {
+    let mcr: *const u32 = 0x4000_6400 as *const u32;
+    debug!("starting can enable mcr: {}", unsafe { *mcr });
+    loop {
+        if device::CAN.msr().read().slak() {
+            device::CAN.mcr().modify(|w| {
+                w.set_abom(true);
+                w.set_sleep(false);
+            });
+        } else {
+            break;
+        }
+        futures::pending!();
+    }
+    debug!("can is in normal mode");
 }
 
 /// CAN transmit task. The serial link can send various packets that need to be acted
@@ -168,12 +101,12 @@ async fn can_slcan_pkt(
     q: &mut spsc::Popper<'_, SlcanIncoming>,
 ) -> Infallible {
     let mut can_silent = false;
+    let mut can_normal = false;
     loop {
         debug!("can_slcan_pkt");
         match q.pop().await {
             SlcanIncoming::Frame(frame) => {
-                // check hardware register to see if tx is enabled
-                if !device::CAN.msr().read().txm() {
+                if !can_normal {
                     warn!("CAN closed, frame discarded");
                 } else if can_silent {
                     warn!("CAN silent, frame discarded");
@@ -185,7 +118,7 @@ async fn can_slcan_pkt(
                     // transmit it
                     if let Ok(status) = can.borrow_mut().transmit(&frame) {
                         // if the frame was queued, but a lower priority frame was kicked out,
-                        // put the displace frame back into the hardware
+                        // put the displaced frame back into the hardware
                         if status.dequeued_frame().is_some() {
                             let lo_priority_frame = status.dequeued_frame().unwrap();
                             send_lower_priority_frame(can, lo_priority_frame).await;
@@ -196,12 +129,15 @@ async fn can_slcan_pkt(
             }
             SlcanIncoming::Open => {
                 // CAN open, get hardware to start tx/rx
-                can.borrow_mut().modify_config().enable();
+                can_enable(&can).await;
+                //                can.borrow_mut().modify_config().enable();
+                can_normal = true;
                 debug!("CAN open");
             }
             SlcanIncoming::Close => {
                 // CAN close, disable hardware
                 can.borrow_mut().modify_config().leave_disabled();
+                can_normal = false;
                 debug!("CAN closed");
             }
             SlcanIncoming::Listen => {
@@ -212,12 +148,29 @@ async fn can_slcan_pkt(
             }
             SlcanIncoming::Speed(spd) => {
                 // set CAN bus speed
-                let bus_spd: BxCanBitTiming = spd.into();
+                let bit_rate = match spd {
+                    SlCanBusSpeed::C10 => 10_000,
+                    SlCanBusSpeed::C20 => 20_000,
+                    SlCanBusSpeed::C50 => 50_000,
+                    SlCanBusSpeed::C100 => 100_000,
+                    SlCanBusSpeed::C125 => 125_000,
+                    SlCanBusSpeed::C250 => 250_000,
+                    SlCanBusSpeed::C500 => 500_000,
+                    SlCanBusSpeed::C800 => 800_000,
+                    SlCanBusSpeed::C1000 => 1_000_000,
+                };
+                let bit_timing = can_util::calc_can_timings(36_000_000, bit_rate).unwrap();
+                let sjw = u8::from(bit_timing.sync_jump_width) as u32;
+                let seg1 = u8::from(bit_timing.seg1) as u32;
+                let seg2 = u8::from(bit_timing.seg2) as u32;
+                let prescaler = u16::from(bit_timing.prescaler) as u32;
                 can.borrow_mut()
                     .modify_config()
-                    .set_bit_timing(bus_spd.into())
-                    .enable();
-                debug!("CAN bus speed set to {}", bus_spd);
+                    .set_bit_timing(
+                        (sjw - 1) << 24 | (seg1 - 1) << 16 | (seg2 - 1) << 20 | (prescaler - 1),
+                    )
+                    .leave_disabled();
+                debug!("CAN bit rate set to {}", bit_rate);
             }
             SlcanIncoming::ReadStatus => {
                 // read the status register, can unstick the hardware
@@ -230,7 +183,7 @@ async fn can_slcan_pkt(
             SlcanIncoming::Wait => {
                 // this shouldn't be passed to this task, it is filtered out
                 // in the other task
-                error!("this shouldn't happen");
+                error!("can_sl_pkt got a Wait, this shouldn't happen");
             }
         }
     }
@@ -272,22 +225,31 @@ static CANRXE: Notify = Notify::new();
 /// This will only work correctly if USB_LP_CAN1_RX0 and CAN1_RX1 interrupt is enabled at the NVIC.
 async fn recv(can: &RefCell<bxcan::Can<BxCan>>) -> Option<bxcan::Frame> {
     debug!("recv");
+    can.borrow_mut()
+        .enable_interrupt(bxcan::Interrupt::Fifo0MessagePending);
+    can.borrow_mut()
+        .enable_interrupt(bxcan::Interrupt::Fifo1MessagePending);
     // enable recv interrupt
-    device::CAN.ier().modify(|w| {
-        w.set_fmpie(0, true);
-        w.set_fmpie(1, true);
-    });
+    //    device::CAN.ier().modify(|w| {
+    //        w.set_fmpie(0, true);
+    //        w.set_fmpie(1, true);
+    //    });
+    debug!(
+        "can isr: fmpie0 {} fmpie1 {}",
+        device::CAN.ier().read().fmpie(0),
+        device::CAN.ier().read().fmpie(1)
+    );
     CANRXE
         .until(|| device::CAN.rfr(0).read().fmp() != 0 || device::CAN.rfr(1).read().fmp() != 0)
         .await;
-    let frame = match can.borrow_mut().receive() {
+    debug!("can ready for receive");
+    match can.borrow_mut().receive() {
         Ok(frame) => Some(frame),
         Err(_) => {
             error!("Lost a frame due to overrun error");
             None
         }
-    };
-    frame
+    }
 }
 
 ///////////////////////////////////////////////////////////////////////////////

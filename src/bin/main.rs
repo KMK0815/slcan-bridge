@@ -3,7 +3,7 @@
 
 use embedded_hal::can::{Frame, Id, StandardId};
 use slcan_bridge as _; // global logger + panicking-behavior + memory layout
-use slcan_bridge::can::{can_service, BxCan, BxCanBitTiming, BxCanPins};
+use slcan_bridge::can::{can_service, BxCan};
 use slcan_parser::{CanserialFrame, FrameByteStreamHandler, SlCanBusSpeed, SlcanIncoming};
 
 use heapless::Vec;
@@ -85,16 +85,22 @@ fn main() -> ! {
         w.set_en(false); // don't start yet
     });
 
+    // configure the CAN pins, TX B9, RX B8, alt fn 2
+    device::RCC.apb2enr().modify(|w| {
+        w.set_gpioben(true);
+        w.set_afioen(true);
+    });
+    device::GPIOB.cr(1).modify(|w| {
+        w.set_cnf_out(1, CnfOut::ALTPUSHPULL);
+        w.set_mode(1, Mode::OUTPUT50MHZ);
+        w.set_cnf_in(0, CnfIn::FLOATING);
+        w.set_mode(0, Mode::INPUT);
+    });
+    device::AFIO.mapr().modify(|w| w.set_can1_remap(2));
+
     // configure the bxcan device
-    let can_dev = bxcan::Can::builder(BxCan::new(
-        device::CAN,
-        device::RCC,
-        device::AFIO,
-        BxCanPins::A12A11,
-    ))
-    .set_bit_timing(BxCanBitTiming::B1000.into())
-    .set_silent(false)
-    .leave_disabled();
+    device::RCC.apb1enr().modify(|w| w.set_canen(true));
+    let can_dev = bxcan::Can::builder(BxCan::new(device::CAN)).leave_disabled();
 
     // Enable the interrupt's that we'll use to wake tasks.
     // Safety: our ISR (below) is safe to enable at any time -- plus, we're in a
@@ -105,7 +111,7 @@ fn main() -> ! {
         cortex_m::peripheral::NVIC::unmask(device::Interrupt::USB_HP_CAN1_TX);
         cortex_m::peripheral::NVIC::unmask(device::Interrupt::USB_LP_CAN1_RX0);
         cortex_m::peripheral::NVIC::unmask(device::Interrupt::CAN1_RX1);
-        cortex_m::peripheral::NVIC::unmask(device::Interrupt::CAN1_SCE);
+        //        cortex_m::peripheral::NVIC::unmask(device::Interrupt::CAN1_SCE);
     }
 
     // Create a queue for received usart bytes. The receive task will
@@ -166,7 +172,7 @@ fn main() -> ! {
         w.set_mode(7, Mode::OUTPUT2MHZ);
     });
     device::GPIOA.bsrr().write(|w| w.set_br(9 - 8, true));
-    device::GPIOC.bsrr().write(|w| w.set_br(7, true));
+    device::GPIOC.bsrr().write(|w| w.set_bs(7, true));
 
     // Set up and run the scheduler.
     lilos::time::initialize_sys_tick(&mut cp.SYST, CLOCK_HZ);
@@ -304,6 +310,7 @@ async fn serial_frame_transmit(
     loop {
         debug!("serial_frame_transmit");
         send(usart, dma_tx, q.pop().await).await;
+        debug!("sent frame on serial");
     }
 }
 
