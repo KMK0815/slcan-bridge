@@ -20,6 +20,9 @@ use slcan_bridge as _; // global logger + panicking-behavior + memory layout
 use slcan_parser::{FrameByteStreamHandler, SlCanBusSpeed, SlcanIncoming};
 use static_cell::StaticCell;
 
+/// The baud rate of the bridge
+const BRIDGE_BAUD_RATE: u32 = 115_200;
+
 // connect the interrupts
 bind_interrupts!(struct Irqs {
     USART2 => usart::BufferedInterruptHandler<peripherals::USART2>;
@@ -31,7 +34,7 @@ bind_interrupts!(struct Irqs {
 
 // buffers for serial port
 static TX_BUF: StaticCell<[u8; 32]> = StaticCell::new();
-static RX_BUF: StaticCell<[u8; 4]> = StaticCell::new();
+static RX_BUF: StaticCell<[u8; 16]> = StaticCell::new();
 
 /// slcan messages channel
 static BCAN_CHANNEL: StaticCell<Channel<NoopRawMutex, SlcanIncoming, 10>> = StaticCell::new();
@@ -78,10 +81,10 @@ async fn main(spawner: Spawner) {
     let bcan_channel = BCAN_CHANNEL.init(Channel::new());
 
     // usart
-    let tx_buf: &'static mut [u8; 32] = TX_BUF.init([0u8; 32]);
-    let rx_buf: &'static mut [u8; 4] = RX_BUF.init([0u8; 4]);
+    let tx_buf = TX_BUF.init([0u8; 32]);
+    let rx_buf = RX_BUF.init([0u8; 16]);
     let mut uart_config = usart::Config::default();
-    uart_config.baudrate = 230_400;
+    uart_config.baudrate = BRIDGE_BAUD_RATE;
     let uart =
         BufferedUart::new(p.USART2, Irqs, p.PA3, p.PA2, tx_buf, rx_buf, uart_config).unwrap();
     let (tx, rx) = uart.split();
@@ -174,7 +177,7 @@ async fn bcan_task(
         // check the channel for slcan packets
         // check CAN device for received frames
         // timeout to turn off rx/tx led's after a wait
-        match select::select3(receiver.receive(), bcan.read(), Timer::after_millis(5)).await {
+        match select::select3(receiver.receive(), bcan.read(), Timer::after_millis(10)).await {
             Either3::First(recv) => {
                 debug!("received slcan packet from host");
                 match recv {
@@ -217,14 +220,12 @@ async fn bcan_task(
                             .modify_config()
                             .set_silent(true)
                             .leave_disabled();
-                        bcan.enable().await;
                         can_silent = true;
-                        can_enabled = true;
+                        can_enabled = false;
                         debug!("CAN listen");
                     }
                     SlcanIncoming::Speed(spd) => {
                         // set CAN bus speed
-                        bcan.as_mut().modify_config().leave_disabled();
                         let bus_spd = match spd {
                             SlCanBusSpeed::C10 => 10_000,
                             SlCanBusSpeed::C20 => 20_000,
@@ -236,9 +237,9 @@ async fn bcan_task(
                             SlCanBusSpeed::C800 => 800_000,
                             SlCanBusSpeed::C1000 => 1_000_000,
                         };
+                        bcan.as_mut().modify_config().leave_disabled();
                         bcan.set_bitrate(bus_spd);
-                        bcan.enable().await;
-                        can_enabled = true;
+                        can_enabled = false;
                         debug!("CAN bus speed set to {}", bus_spd);
                     }
                     SlcanIncoming::ReadStatus => {
@@ -279,13 +280,13 @@ async fn bcan_task(
             Either3::Third(_) => {
                 let t = Instant::now();
                 if tx_timer_last.is_some() {
-                    if (t - tx_timer_last.unwrap()).as_millis() > 10 {
+                    if (t - tx_timer_last.unwrap()).as_millis() > 50 {
                         led1.set_low();
                         tx_timer_last = None;
                     }
                 }
                 if rx_timer_last.is_some() {
-                    if (t - rx_timer_last.unwrap()).as_millis() > 10 {
+                    if (t - rx_timer_last.unwrap()).as_millis() > 50 {
                         led2.set_low();
                         rx_timer_last = None;
                     }
