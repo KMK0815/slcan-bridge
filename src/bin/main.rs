@@ -6,7 +6,7 @@ use embassy_executor::Spawner;
 use embassy_futures::{select, select::Either3};
 use embassy_stm32::can::{
     bxcan::filter::Mask32, bxcan::Fifo, enums::BusError, Can, Rx0InterruptHandler,
-    Rx1InterruptHandler, SceInterruptHandler, TxInterruptHandler,
+    Rx1InterruptHandler, SceInterruptHandler, TryReadError, TxInterruptHandler,
 };
 use embassy_stm32::gpio::{Level, Output, Pin, Speed};
 use embassy_stm32::peripherals::{CAN, USART2};
@@ -72,10 +72,12 @@ async fn main(spawner: Spawner) {
     // led's
     let mut led1 = Output::new(p.PA9.degrade(), Level::Low, Speed::Low);
     let mut led2 = Output::new(p.PC7.degrade(), Level::Low, Speed::Low);
+    let mut heartbeat_led = Output::new(p.PA5.degrade(), Level::Low, Speed::Low);
 
     // flash the LED's during init
     led1.set_high();
     led2.set_high();
+    heartbeat_led.set_high();
 
     // data channels
     let bcan_channel = BCAN_CHANNEL.init(Channel::new());
@@ -101,11 +103,24 @@ async fn main(spawner: Spawner) {
 
     led1.set_low();
     led2.set_low();
+    heartbeat_led.set_low();
 
     info!("Starting tasks...");
 
+    unwrap!(spawner.spawn(heartbeat_task(heartbeat_led)));
     unwrap!(spawner.spawn(uart_read_task(rx, bcan_channel.sender())));
     unwrap!(spawner.spawn(bcan_task(tx, bcan, bcan_channel.receiver(), led1, led2)));
+}
+
+/// task to flash heartbeat led periodically to signal scheduler is still working
+#[embassy_executor::task]
+async fn heartbeat_task(mut led: Output<'static>) {
+    loop {
+        led.set_low();
+        Timer::after_millis(500).await;
+        led.set_high();
+        Timer::after_millis(500).await;
+    }
 }
 
 /// function to write to uart tx
@@ -144,6 +159,48 @@ async fn uart_read_task(
             }
             Err(e) => error!("uart rx error: {:?}", e),
         }
+    }
+}
+
+/// function to alternate led's at 2Hz to signal CAN Bus passive
+async fn bus_passive(
+    bcan: &mut Can<'static, CAN>,
+    led1: &mut Output<'static>,
+    led2: &mut Output<'static>,
+) {
+    loop {
+        led1.set_low();
+        led2.set_high();
+        Timer::after_millis(250).await;
+        led1.set_high();
+        led2.set_low();
+        Timer::after_millis(250).await;
+        match bcan.try_read() {
+            // if we get a frame, just drop it, the stack
+            // should recover in some time
+            Ok(_) | Err(TryReadError::Empty) => break,
+            Err(TryReadError::BusError(BusError::BusOff)) => {
+                // exit this fn, it should enter the bus_off fn
+                // from the main loop subsequently
+                error!("bus is now off");
+                break;
+            }
+            _ => {}
+        }
+    }
+    led1.set_low();
+    led2.set_low();
+}
+
+/// function to alternate led's at 4Hz to signal CAN Bus off
+async fn bus_off(led1: &mut Output<'static>, led2: &mut Output<'static>) {
+    loop {
+        led1.set_low();
+        led2.set_high();
+        Timer::after_millis(125).await;
+        led1.set_high();
+        led2.set_low();
+        Timer::after_millis(125).await;
     }
 }
 
@@ -270,9 +327,15 @@ async fn bcan_task(
                     uart_tx(&mut tx, tx_pkt.as_slice()).await;
                 }
                 Err(e) => match e {
-                    BusError::BusPassive | BusError::BusOff => {
+                    BusError::BusPassive => {
+                        error!("Bus passive, waiting for it to stabilize");
+                        bus_passive(&mut bcan, &mut led1, &mut led2).await;
+                    }
+                    BusError::BusOff => {
                         bcan.as_mut().modify_config().leave_disabled();
-                        error!("{:?}, turned off can", e);
+                        can_enabled = false;
+                        error!("Bus off, turned off can");
+                        bus_off(&mut led1, &mut led2).await;
                     }
                     _ => error!("CAN Bus error, what happened: {:?}", e),
                 },
