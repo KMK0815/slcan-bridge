@@ -4,15 +4,22 @@ Device to transfer messages on a canbus over USB serial as slcan format messages
 
 ## Software
 
-Once the device is plugged in, it should be at /dev/ttyACM0 or
-similar. To check, use dmesg or similar.  To setup serial over
-socketcan or slcan:
+Once the device is plugged in, it should show up as a serial terminal
+device, such as /dev/ttyACM0. To check, use dmesg or similar.  To
+setup serial over socketcan or slcan:
 
 ```
 sudo slcand -S115200 -o -s8 ttyACM0 can0
 sudo ip link set can0 up
 ip link show can0
 ```
+
+## LED's
+
+In normal operation, one LED will flash for received CAN frames, the other
+for transmitted CAN frames. If the CAN bus has errors and is in a passive
+state, the led's will flash alternately at 2hz. If the CAN bus goes to an
+error state, the alternate flashing rate will double to 4hz.
 
 ## Protocol
 
@@ -21,6 +28,7 @@ ip link show can0
 ## Hardware
 
 - [Nucleo-F103RB](https://www.st.com/en/evaluation-tools/nucleo-f103rb.html)
+- [CAN shield](https://github.com/gpgreen/can-bridge-hardware)
 
 ### Dev Board Hardware Pin assignments
 
