@@ -1,11 +1,11 @@
 #![no_std]
 #![no_main]
 
-use bxcan;
 use core::fmt::Write;
 use cortex_m_semihosting::debug;
+use embassy_stm32::can as bxcan;
 //use defmt::*;
-use embedded_hal::can::{ExtendedId, Frame, Id, StandardId};
+use embedded_can::{ExtendedId, Frame, Id, StandardId};
 use heapless::Vec;
 use slcan_parser::CanserialFrame;
 
@@ -86,15 +86,10 @@ pub fn canserial_to_bxcan_id(id: &Id) -> Option<bxcan::Id> {
 
 /// Convert `CanserialFrame` to `bxcan::Frame` for use with bcan driver
 pub fn canserial_to_bxcan(slcan: &CanserialFrame) -> Option<bxcan::Frame> {
+    let id = canserial_to_bxcan_id(&slcan.id()).unwrap();
     match slcan.is_remote_frame() {
-        true => Some(bxcan::Frame::new_remote(
-            canserial_to_bxcan_id(&slcan.id())?,
-            slcan.dlc() as u8,
-        )),
-        false => Some(bxcan::Frame::new_data(
-            canserial_to_bxcan_id(&slcan.id())?,
-            bxcan::Data::new(slcan.data())?,
-        )),
+        true => Some(bxcan::Frame::new_remote(id, slcan.dlc()).unwrap()),
+        false => Some(bxcan::Frame::new_data(id, slcan.data()).unwrap()),
     }
 }
 
@@ -105,13 +100,13 @@ pub fn bxcan_to_canserial(bcanframe: &bxcan::Frame) -> Option<CanserialFrame> {
             bxcan_to_canserial_id(&bcanframe.id())?,
             bcanframe.dlc() as usize,
         ),
-        false => match bcanframe.data() {
-            Some(d) => CanserialFrame::new_frame(
-                bxcan_to_canserial_id(&bcanframe.id())?,
-                d.get(0..d.len())?,
-            ),
+        false => match bcanframe.data().is_empty() {
+            false => {
+                let can_id = bxcan_to_canserial_id(&bcanframe.id()).unwrap();
+                CanserialFrame::new_frame(can_id, bcanframe.data())
+            }
             // possible to have an empty data frame
-            None => CanserialFrame::new_frame(bxcan_to_canserial_id(&bcanframe.id())?, &[]),
+            true => CanserialFrame::new_frame(bxcan_to_canserial_id(&bcanframe.id())?, &[]),
         },
     }
 }

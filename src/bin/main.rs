@@ -4,9 +4,10 @@
 use defmt::*;
 use embassy_executor::Spawner;
 use embassy_futures::{select, select::Either3};
+use embassy_stm32::can::enums::{BusError, TryReadError};
 use embassy_stm32::can::{
-    bxcan::filter::Mask32, bxcan::Fifo, enums::BusError, Can, Rx0InterruptHandler,
-    Rx1InterruptHandler, SceInterruptHandler, TryReadError, TxInterruptHandler,
+    filter, Can, Fifo, Frame, Id, Rx0InterruptHandler, Rx1InterruptHandler, SceInterruptHandler,
+    StandardId, TxInterruptHandler,
 };
 use embassy_stm32::gpio::{Level, Output, Pin, Speed};
 use embassy_stm32::peripherals::{CAN, USART2};
@@ -124,7 +125,7 @@ async fn heartbeat_task(mut led: Output<'static>) {
 }
 
 /// function to write to uart tx
-async fn uart_tx(tx: &mut BufferedUartTx<'static, USART2>, buf: &[u8]) {
+async fn uart_tx(tx: &mut BufferedUartTx<'_>, buf: &[u8]) {
     match tx.write_all(buf).await {
         Ok(()) => {}
         Err(e) => error!("error during tx: {:?}", e),
@@ -134,7 +135,7 @@ async fn uart_tx(tx: &mut BufferedUartTx<'static, USART2>, buf: &[u8]) {
 /// task to read uart and extract slcan packets
 #[embassy_executor::task]
 async fn uart_read_task(
-    mut rx: BufferedUartRx<'static, USART2>,
+    mut rx: BufferedUartRx<'static>,
     bcan_sender: Sender<'static, NoopRawMutex, SlcanIncoming, 10>,
 ) {
     info!("uart_read task starting");
@@ -163,11 +164,7 @@ async fn uart_read_task(
 }
 
 /// function to alternate led's at 2Hz to signal CAN Bus passive
-async fn bus_passive(
-    bcan: &mut Can<'static, CAN>,
-    led1: &mut Output<'static>,
-    led2: &mut Output<'static>,
-) {
+async fn bus_passive(bcan: &mut Can<'_>, led1: &mut Output<'static>, led2: &mut Output<'static>) {
     loop {
         led1.set_low();
         led2.set_high();
@@ -207,8 +204,8 @@ async fn bus_off(led1: &mut Output<'static>, led2: &mut Output<'static>) {
 /// task for bcan peripheral
 #[embassy_executor::task]
 async fn bcan_task(
-    mut tx: BufferedUartTx<'static, USART2>,
-    mut bcan: Can<'static, CAN>,
+    mut tx: BufferedUartTx<'static>,
+    mut bcan: Can<'static>,
     receiver: Receiver<'static, NoopRawMutex, SlcanIncoming, 10>,
     mut led1: Output<'static>,
     mut led2: Output<'static>,
@@ -217,17 +214,14 @@ async fn bcan_task(
     let mut can_enabled = false;
     let mut can_silent = false;
 
-    bcan.as_mut()
-        .modify_filters()
-        .enable_bank(0, Fifo::Fifo0, Mask32::accept_all());
+    bcan.modify_filters()
+        .enable_bank(0, Fifo::Fifo0, filter::Mask32::accept_all());
 
-    bcan.as_mut()
-        .modify_config()
+    bcan.modify_config()
         .set_loopback(false)
         .set_silent(can_silent)
-        .leave_disabled();
+        .set_bitrate(250_000);
 
-    bcan.set_bitrate(250_000);
     let mut tx_timer_last = None;
     let mut rx_timer_last = None;
     loop {
@@ -268,15 +262,12 @@ async fn bcan_task(
                     SlcanIncoming::Close => {
                         // CAN close, disable hardware
                         can_enabled = false;
-                        bcan.as_mut().modify_config().leave_disabled();
+                        bcan.modify_config();
                         debug!("CAN closed");
                     }
                     SlcanIncoming::Listen => {
                         // CAN Listen only, no tx
-                        bcan.as_mut()
-                            .modify_config()
-                            .set_silent(true)
-                            .leave_disabled();
+                        bcan.modify_config().set_silent(true);
                         can_silent = true;
                         can_enabled = false;
                         debug!("CAN listen");
@@ -294,7 +285,7 @@ async fn bcan_task(
                             SlCanBusSpeed::C800 => 800_000,
                             SlCanBusSpeed::C1000 => 1_000_000,
                         };
-                        bcan.as_mut().modify_config().leave_disabled();
+                        bcan.modify_config();
                         bcan.set_bitrate(bus_spd);
                         can_enabled = false;
                         debug!("CAN bus speed set to {}", bus_spd);
@@ -332,7 +323,7 @@ async fn bcan_task(
                         bus_passive(&mut bcan, &mut led1, &mut led2).await;
                     }
                     BusError::BusOff => {
-                        bcan.as_mut().modify_config().leave_disabled();
+                        bcan.modify_config();
                         can_enabled = false;
                         error!("Bus off, turned off can");
                         bus_off(&mut led1, &mut led2).await;
