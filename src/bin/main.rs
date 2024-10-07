@@ -6,11 +6,11 @@ use embassy_executor::Spawner;
 use embassy_futures::{select, select::Either3};
 use embassy_stm32::can::enums::{BusError, TryReadError};
 use embassy_stm32::can::{
-    filter, Can, Fifo, Frame, Id, Rx0InterruptHandler, Rx1InterruptHandler, SceInterruptHandler,
-    StandardId, TxInterruptHandler,
+    filter, Can, Fifo, Rx0InterruptHandler, Rx1InterruptHandler, SceInterruptHandler,
+    TxInterruptHandler
 };
 use embassy_stm32::gpio::{Level, Output, Pin, Speed};
-use embassy_stm32::peripherals::{CAN, USART2};
+use embassy_stm32::peripherals::CAN;
 use embassy_stm32::usart::{BufferedUart, BufferedUartRx, BufferedUartTx};
 use embassy_stm32::{bind_interrupts, peripherals, rcc, time::Hertz, usart, Config};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -211,7 +211,7 @@ async fn bcan_task(
     mut led2: Output<'static>,
 ) {
     info!("bcan task starting");
-    let mut can_enabled = false;
+    let mut can_enabled: bool = false;
     let mut can_silent = false;
 
     bcan.modify_filters()
@@ -236,9 +236,7 @@ async fn bcan_task(
                         // serial port has passed a frame to transmit on the hardware
                         tx_timer_last.replace(Instant::now());
                         led1.set_high();
-                        if !can_enabled {
-                            warn!("CAN closed, frame discarded");
-                        } else if can_silent {
+                        if !can_enabled || can_silent {
                             warn!("CAN silent, frame discarded");
                         } else {
                             // safety - parser won't allow invalid frames, so this is ok
@@ -248,7 +246,7 @@ async fn bcan_task(
                             debug!("CAN frame {:?} sent", frame);
                             if status.dequeued_frame().is_some() {
                                 let lo_priority_frame = status.dequeued_frame().unwrap();
-                                bcan.write(&lo_priority_frame).await;
+                                bcan.write(lo_priority_frame).await;
                                 debug!("low priority frame reinserted into hardware");
                             }
                         }
@@ -333,17 +331,15 @@ async fn bcan_task(
             },
             Either3::Third(_) => {
                 let t = Instant::now();
-                if tx_timer_last.is_some() {
-                    if (t - tx_timer_last.unwrap()).as_millis() > 50 {
-                        led1.set_low();
-                        tx_timer_last = None;
-                    }
+
+                if tx_timer_last.is_some() && (t - tx_timer_last.unwrap()).as_millis() > 50 {
+                    led1.set_low();
+                    tx_timer_last = None;
                 }
-                if rx_timer_last.is_some() {
-                    if (t - rx_timer_last.unwrap()).as_millis() > 50 {
-                        led2.set_low();
-                        rx_timer_last = None;
-                    }
+
+                if rx_timer_last.is_some() && (t - rx_timer_last.unwrap()).as_millis() > 50 {
+                    led2.set_low();
+                    rx_timer_last = None;
                 }
             }
         }

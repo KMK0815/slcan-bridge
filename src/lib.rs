@@ -57,14 +57,8 @@ pub fn bxcan_to_vec(bxcan_frame: &bxcan::Frame) -> Option<Vec<u8, 32>> {
 /// bxcan doesn't use embedded_hal
 pub fn bxcan_to_canserial_id(id: &bxcan::Id) -> Option<Id> {
     match id {
-        bxcan::Id::Standard(stdid) => match StandardId::new(stdid.as_raw()) {
-            Some(id) => Some(Id::Standard(id)),
-            None => None,
-        },
-        bxcan::Id::Extended(extid) => match ExtendedId::new(extid.as_raw()) {
-            Some(id) => Some(Id::Extended(id)),
-            None => None,
-        },
+        bxcan::Id::Standard(stdid) => StandardId::new(stdid.as_raw()).map(Id::Standard),
+        bxcan::Id::Extended(extid) => ExtendedId::new(extid.as_raw()).map(Id::Extended),
     }
 }
 
@@ -73,14 +67,8 @@ pub fn bxcan_to_canserial_id(id: &bxcan::Id) -> Option<Id> {
 /// bxcan doesn't use embedded_hal
 pub fn canserial_to_bxcan_id(id: &Id) -> Option<bxcan::Id> {
     match id {
-        Id::Standard(stdid) => match bxcan::StandardId::new(stdid.as_raw()) {
-            Some(id) => Some(bxcan::Id::Standard(id)),
-            None => None,
-        },
-        Id::Extended(extid) => match bxcan::ExtendedId::new(extid.as_raw()) {
-            Some(id) => Some(bxcan::Id::Extended(id)),
-            None => None,
-        },
+        Id::Standard(stdid) => bxcan::StandardId::new(stdid.as_raw()).map(bxcan::Id::Standard),
+        Id::Extended(extid) => bxcan::ExtendedId::new(extid.as_raw()).map(bxcan::Id::Extended),
     }
 }
 
@@ -96,17 +84,14 @@ pub fn canserial_to_bxcan(slcan: &CanserialFrame) -> Option<bxcan::Frame> {
 /// Convert `bxcan::Frame` to `CanserialFrame` for use with serial port
 pub fn bxcan_to_canserial(bcanframe: &bxcan::Frame) -> Option<CanserialFrame> {
     match bcanframe.is_remote_frame() {
-        true => CanserialFrame::new_remote(
-            bxcan_to_canserial_id(&bcanframe.id())?,
-            bcanframe.dlc() as usize,
-        ),
+        true => CanserialFrame::new_remote(bxcan_to_canserial_id(bcanframe.id())?, bcanframe.dlc()),
         false => match bcanframe.data().is_empty() {
             false => {
-                let can_id = bxcan_to_canserial_id(&bcanframe.id()).unwrap();
+                let can_id = bxcan_to_canserial_id(bcanframe.id()).unwrap();
                 CanserialFrame::new_frame(can_id, bcanframe.data())
             }
             // possible to have an empty data frame
-            true => CanserialFrame::new_frame(bxcan_to_canserial_id(&bcanframe.id())?, &[]),
+            true => CanserialFrame::new_frame(bxcan_to_canserial_id(bcanframe.id())?, &[]),
         },
     }
 }
