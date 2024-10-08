@@ -1,5 +1,5 @@
 [target.'cfg(all(target_arch = "arm", target_os = "none"))']
-runner = "probe-rs run --chip STM32F103RB --connect-under-reset"
+runner = "probe-rs run --chip STM32F746ZG --connect-under-reset"
 # runner = ["probe-rs", "run", "--chip", "$CHIP", "--log-format", "{L} {s}"]
 
 rustflags = [
@@ -12,7 +12,7 @@ rustflags = [
 ]
 
 [build]
-target = "thumbv7m-none-eabi" # Cortex-M3
+target = "thumbv7em-none-eabihf" # Cortex-M3
 
 [alias]
 rb = "run --bin"

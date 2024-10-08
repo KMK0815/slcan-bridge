@@ -10,7 +10,7 @@ use embassy_stm32::can::{
     TxInterruptHandler
 };
 use embassy_stm32::gpio::{Level, Output, Pin, Speed};
-use embassy_stm32::peripherals::CAN;
+use embassy_stm32::peripherals::CAN1;
 use embassy_stm32::usart::{BufferedUart, BufferedUartRx, BufferedUartTx};
 use embassy_stm32::{bind_interrupts, peripherals, rcc, time::Hertz, usart, Config};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -27,10 +27,10 @@ const BRIDGE_BAUD_RATE: u32 = 115_200;
 // connect the interrupts
 bind_interrupts!(struct Irqs {
     USART2 => usart::BufferedInterruptHandler<peripherals::USART2>;
-    USB_LP_CAN1_RX0 => Rx0InterruptHandler<CAN>;
-    CAN1_RX1 => Rx1InterruptHandler<CAN>;
-    CAN1_SCE => SceInterruptHandler<CAN>;
-    USB_HP_CAN1_TX => TxInterruptHandler<CAN>;
+    CAN1_RX0 => Rx0InterruptHandler<CAN1>;
+    CAN1_RX1 => Rx1InterruptHandler<CAN1>;
+    CAN1_SCE => SceInterruptHandler<CAN1>;
+    CAN1_TX => TxInterruptHandler<CAN1>;
 });
 
 // buffers for serial port
@@ -54,19 +54,19 @@ async fn main(spawner: Spawner) {
     // signal that is provided on the Nucleo board
     // Final sysclk will be 72MHz
     let mut config: Config = Default::default();
-    config.rcc.hsi = true;
-    config.rcc.hse = Some(rcc::Hse {
-        freq: Hertz(8_000_000),
-        mode: rcc::HseMode::Bypass,
-    });
-    config.rcc.sys = rcc::Sysclk::PLL1_P;
-    config.rcc.pll = Some(rcc::Pll {
-        src: rcc::PllSource::HSE,
-        prediv: rcc::PllPreDiv::DIV1,
-        mul: rcc::PllMul::MUL9,
-    });
-    config.rcc.apb1_pre = rcc::APBPrescaler::DIV2;
-    config.rcc.apb2_pre = rcc::APBPrescaler::DIV2;
+    // config.rcc.hsi = true;
+    // config.rcc.hse = Some(rcc::Hse {
+    //     freq: Hertz(8_000_000),
+    //     mode: rcc::HseMode::Bypass,
+    // });
+    // config.rcc.sys = rcc::Sysclk::PLL1_P;
+    // config.rcc.pll = Some(rcc::Pll {
+    //     src: rcc::PllSource::HSE,
+    //     prediv: rcc::PllPreDiv::DIV1,
+    //     mul: rcc::PllMul::MUL9,
+    // });
+    // config.rcc.apb1_pre = rcc::APBPrescaler::DIV2;
+    // config.rcc.apb2_pre = rcc::APBPrescaler::DIV2;
 
     let p = embassy_stm32::init(config);
 
@@ -93,12 +93,12 @@ async fn main(spawner: Spawner) {
     let (tx, rx) = uart.split();
 
     // set alternate pin mapping to B8/B9
-    embassy_stm32::pac::AFIO
-        .mapr()
-        .modify(|w| w.set_can1_remap(2));
+    // embassy_stm32::pac::AFIO
+    //     .mapr()
+    //     .modify(|w| w.set_can1_remap(2));
 
     // bxcan can device
-    let bcan = Can::new(p.CAN, p.PB8, p.PB9, Irqs);
+    let bcan = Can::new(p.CAN1, p.PB8, p.PB9, Irqs);
 
     Timer::after_millis(800).await;
 
