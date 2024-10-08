@@ -12,7 +12,7 @@ use embassy_stm32::can::{
 use embassy_stm32::gpio::{Level, Output, Pin, Speed};
 use embassy_stm32::peripherals::CAN1;
 use embassy_stm32::usart::{BufferedUart, BufferedUartRx, BufferedUartTx};
-use embassy_stm32::{bind_interrupts, peripherals, rcc, time::Hertz, usart, Config};
+use embassy_stm32::{bind_interrupts, peripherals, usart};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{Channel, Receiver, Sender};
 use embassy_time::{Instant, Timer};
@@ -53,7 +53,7 @@ async fn main(spawner: Spawner) {
     // setup rcc config to use external 8MHz clock
     // signal that is provided on the Nucleo board
     // Final sysclk will be 72MHz
-    let mut config: Config = Default::default();
+    // let mut config: Config = Default::default();
     // config.rcc.hsi = true;
     // config.rcc.hse = Some(rcc::Hse {
     //     freq: Hertz(8_000_000),
@@ -68,7 +68,7 @@ async fn main(spawner: Spawner) {
     // config.rcc.apb1_pre = rcc::APBPrescaler::DIV2;
     // config.rcc.apb2_pre = rcc::APBPrescaler::DIV2;
 
-    let p = embassy_stm32::init(config);
+    let p = embassy_stm32::init(Default::default());
 
     // led's
     let mut led1 = Output::new(p.PA9.degrade(), Level::Low, Speed::Low);
